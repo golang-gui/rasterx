@@ -667,6 +667,11 @@ func (r *Stroker) LineSeg(sgm Rasterx, b fixed.Point26_6) {
 // so that if the line is being stroked or dash stroked, different actions can be
 // taken.
 func (r *Stroker) lineF(b fixed.Point26_6) {
+	// Repeated fixed-point samples carry no direction. Keep the previous
+	// normal instead of collapsing the stroke edge to the centerline.
+	if b == r.a {
+		return
+	}
 	// b is either an intra-segment value, or
 	// the end of the segment.
 	var bnorm fixed.Point26_6

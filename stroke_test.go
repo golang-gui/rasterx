@@ -120,3 +120,22 @@ func (s *joinOutlineRecorder) Line(p fixed.Point26_6) {
 	s.points = append(s.points, p)
 	s.Scanner.Line(p)
 }
+
+// 重合的端点控制点会产生多个量化后相同的采样点；圆端帽的内部不能因此变透明。
+func TestBezierEndpointCoverage(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 128, 128))
+	r := rasterx.NewStroker(128, 128, rasterx.NewScannerGV(128, 128, img, img.Bounds()))
+	r.SetStroke(12*64, 4*64, rasterx.RoundCap, nil, nil, rasterx.Round)
+	r.SetColor(color.RGBA{A: 255})
+	r.Start(rasterx.ToFixedP(40, 40))
+	r.CubeBezier(rasterx.ToFixedP(40, 40), rasterx.ToFixedP(80, 70), rasterx.ToFixedP(80, 100))
+	r.Stop(false)
+	r.Draw()
+	for y := 35; y < 45; y++ {
+		for x := 35; x < 45; x++ {
+			if math.Hypot(float64(x)+.5-40, float64(y)+.5-40) < 4.5 && img.RGBAAt(x, y).A != 255 {
+				t.Fatalf("端帽内部 (%d,%d) alpha=%d，期望 255", x, y, img.RGBAAt(x, y).A)
+			}
+		}
+	}
+}
