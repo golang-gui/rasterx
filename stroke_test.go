@@ -106,3 +106,17 @@ func TestCurveReversalOutline(t *testing.T) {
 		}
 	}
 }
+
+type joinOutlineRecorder struct {
+	rasterx.Scanner
+	points []fixed.Point26_6
+}
+
+func (s *joinOutlineRecorder) Start(p fixed.Point26_6) {
+	s.points = append(s.points, p)
+	s.Scanner.Start(p)
+}
+func (s *joinOutlineRecorder) Line(p fixed.Point26_6) {
+	s.points = append(s.points, p)
+	s.Scanner.Line(p)
+}

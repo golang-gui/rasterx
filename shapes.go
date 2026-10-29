@@ -15,10 +15,10 @@ import (
 // in ellipse parametric when approximating an off-axis ellipse.
 const MaxDx float64 = math.Pi / 8
 
-// ToFixedP converts two floats to a fixed point.
+// ToFixedP rounds two floats to the nearest 1/64 coordinate unit.
 func ToFixedP(x, y float64) (p fixed.Point26_6) {
-	p.X = fixed.Int26_6(x * 64)
-	p.Y = fixed.Int26_6(y * 64)
+	p.X = fixed.Int26_6(math.Round(x * 64))
+	p.Y = fixed.Int26_6(math.Round(y * 64))
 	return
 }
 
@@ -95,7 +95,7 @@ func AddRoundRect(minX, minY, maxX, maxY, rx, ry, rot float64, gf GapFunc, p Add
 	q.Stop(true)
 }
 
-//AddArc adds an arc to the adder p
+// AddArc adds an arc to the adder p
 func AddArc(points []float64, cx, cy, px, py float64, p Adder) (lx, ly float64) {
 	rotX := points[2] * math.Pi / 180 // Convert degress to radians
 	largeArc := points[3] != 0
