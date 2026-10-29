@@ -513,6 +513,9 @@ func (r *Stroker) CubeBezier(b, c, d fixed.Point26_6) {
 
 // quadBezierf calcs end curvature of beziers
 func (r *Stroker) quadBezierf(s Rasterx, b, c fixed.Point26_6) {
+	if r.strokeCollinearCurve(s, [4]fixed.Point26_6{r.a, b, c}, 3) {
+		return
+	}
 	r.trailPoint = r.leadPoint
 	r.CalcEndCurvature(r.a, b, c, c, b, r.a, fixed.Int52_12(2<<12), doCalcCurvature(s))
 	r.QuadBezierF(s, b, c)
@@ -539,6 +542,9 @@ func (r *Stroker) cubeBezierf(sgm Rasterx, b, c, d fixed.Point26_6) {
 		sgm.Line(d)
 		return
 	}
+	if r.strokeCollinearCurve(sgm, [4]fixed.Point26_6{r.a, b, c, d}, 4) {
+		return
+	}
 	r.trailPoint = r.leadPoint
 	// Only calculate curvature if stroking or and using arc or arc-clip
 	doCalcCurve := doCalcCurvature(sgm)
@@ -557,12 +563,81 @@ func (r *Stroker) cubeBezierf(sgm Rasterx, b, c, d fixed.Point26_6) {
 	r.a = d
 }
 
+// strokeCollinearCurve splits a retracing straight curve at its stationary
+// points. Uniform flattening can miss these cusps or emit zero tangents there.
+// The circular sweep inside a curve is independent of the command join style.
+func (r *Stroker) strokeCollinearCurve(sgm Rasterx, points [4]fixed.Point26_6, count int) bool {
+	var direction fixed.Point26_6
+	for i := 1; i < count; i++ {
+		v := points[i].Sub(points[0])
+		if direction == (fixed.Point26_6{}) {
+			direction = v
+		} else if int64(direction.X)*int64(v.Y) != int64(direction.Y)*int64(v.X) {
+			return false
+		}
+	}
+	if direction == (fixed.Point26_6{}) {
+		return false
+	}
+	var p [4]float64
+	for i := 0; i < count; i++ {
+		if math.Abs(float64(direction.X)) >= math.Abs(float64(direction.Y)) {
+			p[i] = float64(points[i].X)
+		} else {
+			p[i] = float64(points[i].Y)
+		}
+	}
+	a, b, c := 0.0, p[2]-2*p[1]+p[0], p[1]-p[0]
+	if count == 4 {
+		a = p[3] - 3*p[2] + 3*p[1] - p[0]
+		b *= 2
+	}
+	var roots [2]float64
+	n := 0
+	if a == 0 {
+		if b != 0 {
+			roots[0], n = -c/b, 1
+		}
+	} else if discriminant := b*b - 4*a*c; discriminant > 0 {
+		q := -.5 * (b + math.Copysign(math.Sqrt(discriminant), b))
+		roots[0], roots[1], n = q/a, c/q, 2
+		if roots[0] > roots[1] {
+			roots[0], roots[1] = roots[1], roots[0]
+		}
+	}
+	join, gap := r.JoinMode, r.JoinGap
+	split := false
+	for _, t := range roots[:n] {
+		if t <= 0 || t >= 1 {
+			continue
+		}
+		var x, y [4]float64
+		for i := 0; i < count; i++ {
+			x[i], y[i] = float64(points[i].X), float64(points[i].Y)
+		}
+		for j := count - 1; j > 0; j-- {
+			for i := 0; i < j; i++ {
+				x[i] += t * (x[i+1] - x[i])
+				y[i] += t * (y[i+1] - y[i])
+			}
+		}
+		r.LineSeg(sgm, fixed.Point26_6{X: fixed.Int26_6(math.Round(x[0])), Y: fixed.Int26_6(math.Round(y[0]))})
+		r.JoinMode, r.JoinGap = Round, RoundGap
+		split = true
+	}
+	if split {
+		r.LineSeg(sgm, points[count-1])
+		r.JoinMode, r.JoinGap = join, gap
+	}
+	return split
+}
+
 // Line adds a line segment to the rasterizer
 func (r *Stroker) Line(b fixed.Point26_6) {
 	r.LineSeg(r, b)
 }
 
-//LineSeg is called by both the Stroker and Dasher
+// LineSeg is called by both the Stroker and Dasher
 func (r *Stroker) LineSeg(sgm Rasterx, b fixed.Point26_6) {
 	r.trailPoint = r.leadPoint
 	ba := b.Sub(r.a)

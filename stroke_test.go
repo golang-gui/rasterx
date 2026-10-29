@@ -69,3 +69,40 @@ func TestRoundStrokeOutline(t *testing.T) {
 		}
 	}
 }
+
+// 二次曲线的最远点为 40+(120-40)/2=80；三次曲线为 40+3*(100-40)/4=85。
+// 曲线内部的折返没有命令连接点，其轮廓不应受 stroke-linejoin 影响。
+func TestCurveReversalOutline(t *testing.T) {
+	for _, curve := range []struct {
+		name string
+		endX int
+		draw func(*rasterx.Stroker)
+	}{
+		{"quadratic", 80, func(r *rasterx.Stroker) { r.QuadBezier(rasterx.ToFixedP(120, 64), rasterx.ToFixedP(40, 64)) }},
+		{"cubic", 85, func(r *rasterx.Stroker) {
+			r.CubeBezier(rasterx.ToFixedP(100, 64), rasterx.ToFixedP(100, 64), rasterx.ToFixedP(40, 64))
+		}},
+		{"cubic-two-cusps", 63, func(r *rasterx.Stroker) {
+			r.CubeBezier(rasterx.ToFixedP(120, 64), rasterx.ToFixedP(-40, 64), rasterx.ToFixedP(40, 64))
+		}},
+	} {
+		for _, join := range []rasterx.JoinMode{rasterx.Round, rasterx.Bevel, rasterx.Miter} {
+			t.Run(curve.name+"/"+strconv.Itoa(int(join)), func(t *testing.T) {
+				img := image.NewRGBA(image.Rect(0, 0, 128, 128))
+				r := rasterx.NewStroker(128, 128, rasterx.NewScannerGV(128, 128, img, img.Bounds()))
+				r.SetStroke(12*64, 4*64, rasterx.RoundCap, nil, nil, join)
+				r.SetColor(color.RGBA{G: 255, A: 255})
+				r.Start(rasterx.ToFixedP(40, 64))
+				curve.draw(r)
+				r.Stop(false)
+				r.Draw()
+				if got := img.RGBAAt(curve.endX+4, 64); got != (color.RGBA{G: 255, A: 255}) {
+					t.Fatalf("曲线折返处内部像素 = %v，期望绿色", got)
+				}
+				if got := img.RGBAAt(curve.endX+8, 64); got.A != 0 {
+					t.Fatalf("曲线折返处外部像素 = %v，期望透明", got)
+				}
+			})
+		}
+	}
+}
