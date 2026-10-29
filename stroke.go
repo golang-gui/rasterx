@@ -244,6 +244,12 @@ func (r *Stroker) strokeEdge(p C2Point, crossProd fixed.Int26_6) {
 	ra := &r.Filler
 	s1, s2 := p.P.Add(p.TNorm), p.P.Add(p.LNorm) // Bevel points for top leading and trailing
 	ra.Start(s1)
+	// Collinear normals can also point in opposite directions. A round join
+	// at such a reversal needs a semicircle, rather than a straight bevel.
+	if crossProd == 0 && r.JoinMode == Round && DotProd(p.TNorm, p.LNorm) < 0 {
+		r.JoinGap(ra, p.P, p.TNorm, p.LNorm)
+		return
+	}
 	if crossProd > -epsilonFixed*epsilonFixed { // Almost co-linear or convex
 		ra.Line(s2)
 		return // No need to fill any gaps
