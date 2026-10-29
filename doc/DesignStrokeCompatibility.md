@@ -131,3 +131,31 @@ Chrome 156.0.8078.47 实测不支持 miter-clip，计算样式回退为 miter，
 
 原生运行环境为 Linux amd64、Go 1.25.8；跨目标仅编译，不代表其他平台原生运行通过。
 本阶段不改变扫描器选择，不增加高精度路径模型，也不声称消除所有亚像素差异。
+
+## 后续阶段：近直线曲线的端部
+
+resvg `line-as-curve-2` 的控制点紧邻端点，短控制边的方向与主轴相差约 45°。
+旧实现保持该短切线的端帽，却使用跨越该区域的均匀离散段连接，形成可见的端部尖角。
+这不是普通边缘覆盖率差异。
+
+采用有界的近直线简化：二次/三次控制点到端点弦的距离均不超过既有
+`epsilonFixed=16`（1/4 光栅坐标单位），并且控制点沿弦的投影单调位于两端之间，
+才以现有 LineSeg 路径生成轮廓及端帽。Bezier 的凸包性质给出中心线的距离上界；
+该规则是退化曲线的近似策略，不声称短端部的数学切线与弦完全相同。
+不满足条件的曲线继续采用原曲线路径，严格共线折返仍先用驻点拆分处理。
+Filler 的路径不简化，不修改输入及 join/cap 状态，也不把这种近似扩展到任意曲线。
+
+验证分别使用独立直线端帽的内外区域、非直线/折返控制组和原始 SVG 套件。
+检查 butt / round / square、旋转、缩放和虚线；超出误差限的控制组必须继续保留曲率。
+
+参考 Skia `SkStroke.cpp` 的 CheckCubicLinear / CheckQuadLinear：先分类退化、近直线曲线，
+再进入完整描边。本实现使用光栅坐标的绝对误差上限，不照搬随路径长度增大的相对容差。
+
+- [Skia 描边实现](https://github.com/google/skia/blob/main/src/core/SkStroke.cpp)
+- [x] 近直线简化与独立回归：butt / round / square、1x/2x/4x、旋转和虚线。
+- [x] 控制组排除越界、非单调、明显弯曲、首尾重合及放大后超限的曲线。
+- [x] 原始 SVG 对照及三库全量、race、fuzz、目标编译检查。
+
+resvg line-as-curve-2 在 24/64/128px 与 Chrome 对照、500px 与套件 PNG 对照，
+stable_bad / geometry_bad 均为 0。全量 Lucide / Bootstrap 没有新增筛选候选，
+普通边缘差异仍保留；跨库结果见 oksvg 的 CorpusValidation 第四阶段。

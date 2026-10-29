@@ -520,6 +520,10 @@ func (r *Stroker) quadBezierf(s Rasterx, b, c fixed.Point26_6) {
 	if r.strokeCollinearCurve(s, [4]fixed.Point26_6{r.a, b, c}, 3) {
 		return
 	}
+	if nearLinearCurve([4]fixed.Point26_6{r.a, b, c}, 3) {
+		r.LineSeg(s, c)
+		return
+	}
 	r.trailPoint = r.leadPoint
 	r.CalcEndCurvature(r.a, b, c, c, b, r.a, fixed.Int52_12(2<<12), doCalcCurvature(s))
 	r.QuadBezierF(s, b, c)
@@ -549,6 +553,10 @@ func (r *Stroker) cubeBezierf(sgm Rasterx, b, c, d fixed.Point26_6) {
 	if r.strokeCollinearCurve(sgm, [4]fixed.Point26_6{r.a, b, c, d}, 4) {
 		return
 	}
+	if nearLinearCurve([4]fixed.Point26_6{r.a, b, c, d}, 4) {
+		r.LineSeg(sgm, d)
+		return
+	}
 	r.trailPoint = r.leadPoint
 	// Only calculate curvature if stroking or and using arc or arc-clip
 	doCalcCurve := doCalcCurvature(sgm)
@@ -565,6 +573,30 @@ func (r *Stroker) cubeBezierf(sgm Rasterx, b, c, d fixed.Point26_6) {
 	}
 	r.CubeBezierF(sgm, b, c, d)
 	r.a = d
+}
+
+// nearLinearCurve bounds the control polygon to a quarter-unit strip around
+// its chord. Monotone projections exclude retracing curves and loops. Reducing
+// these near-degenerate curves before stroking also keeps caps and joins aligned
+// with the flattened segment instead of a very short control-edge tangent.
+func nearLinearCurve(points [4]fixed.Point26_6, count int) bool {
+	a, b := points[0], points[count-1]
+	dx, dy := float64(b.X)-float64(a.X), float64(b.Y)-float64(a.Y)
+	lengthSquared := dx*dx + dy*dy
+	if lengthSquared == 0 {
+		return false
+	}
+	limit := float64(epsilonFixed) * math.Sqrt(lengthSquared)
+	previous := 0.0
+	for _, p := range points[1 : count-1] {
+		px, py := float64(p.X)-float64(a.X), float64(p.Y)-float64(a.Y)
+		projection := px*dx + py*dy
+		if projection < previous || projection > lengthSquared || math.Abs(px*dy-py*dx) > limit {
+			return false
+		}
+		previous = projection
+	}
+	return true
 }
 
 // strokeCollinearCurve splits a retracing straight curve at its stationary

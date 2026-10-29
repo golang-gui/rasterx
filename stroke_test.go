@@ -186,3 +186,74 @@ func TestMiterClipGapCallback(t *testing.T) {
 		t.Fatalf("gap 调用次数=%d，期望 1", calls)
 	}
 }
+
+// 近直线控制点均在弦的 1/4 光栅单位内，投影单调。
+// 使用独立的有限直线、端帽和虚线区间距离，检查距边界 1.25px 外的像素。
+func TestNearLinearStroke(t *testing.T) {
+	for _, cap := range []struct {
+		name string
+		cap  rasterx.CapFunc
+	}{{"butt", rasterx.ButtCap}, {"round", rasterx.RoundCap}, {"square", rasterx.SquareCap}} {
+		for _, scale := range []int{1, 2, 4} {
+			for _, angle := range []float64{0, math.Pi / 2} {
+				for _, dashed := range []bool{false, true} {
+					name := cap.name + "/" + strconv.Itoa(scale) + "/" + strconv.FormatFloat(angle, 'f', 2, 64) + "/" + strconv.FormatBool(dashed)
+					t.Run(name, func(t *testing.T) {
+						img := image.NewRGBA(image.Rect(0, 0, 200*scale, 200*scale))
+						r := rasterx.NewDasher(img.Bounds().Dx(), img.Bounds().Dy(), rasterx.NewScannerGV(img.Bounds().Dx(), img.Bounds().Dy(), img, img.Bounds()))
+						var dash []float64
+						if dashed {
+							dash = []float64{15 * float64(scale), 10 * float64(scale)}
+						}
+						r.SetStroke(fixed.Int26_6(10*64*scale), 4*64, cap.cap, nil, nil, rasterx.Miter, dash, 0)
+						ink := color.RGBA{R: 64, G: 96, B: 160, A: 255}
+						r.SetColor(ink)
+						m := rasterx.Identity.Scale(float64(scale), float64(scale)).Translate(100, 100).Rotate(angle).Translate(-100, -100)
+						points := [4]fixed.Point26_6{rasterx.ToFixedP(40, 150), rasterx.ToFixedP(40.0625, 150), rasterx.ToFixedP(150, 40), rasterx.ToFixedP(150.0625, 40)}
+						for i := range points {
+							points[i] = m.TFixed(points[i])
+						}
+						r.Start(points[0])
+						r.CubeBezier(points[1], points[2], points[3])
+						r.Stop(false)
+						r.Draw()
+						ax, ay := float64(points[0].X)/64, float64(points[0].Y)/64
+						dx, dy := float64(points[3].X-points[0].X)/64, float64(points[3].Y-points[0].Y)/64
+						length, half := math.Hypot(dx, dy), 5*float64(scale)
+						intervals := [][2]float64{{0, length}}
+						if dashed {
+							intervals = nil
+							for start := 0.0; start < length; start += 25 * float64(scale) {
+								intervals = append(intervals, [2]float64{start, math.Min(length, start+15*float64(scale))})
+							}
+						}
+						for y := 0; y < img.Bounds().Dy(); y++ {
+							for x := 0; x < img.Bounds().Dx(); x++ {
+								px, py := float64(x)+.5-ax, float64(y)+.5-ay
+								along, across := (px*dx+py*dy)/length, (px*dy-py*dx)/length
+								distance := math.Inf(1)
+								for _, interval := range intervals {
+									lo, hi := interval[0], interval[1]
+									if cap.name == "round" {
+										end := math.Max(lo-along, math.Max(0, along-hi))
+										distance = math.Min(distance, math.Hypot(end, across)-half)
+									} else {
+										if cap.name == "square" {
+											lo, hi = lo-half, hi+half
+										}
+										qx, qy := math.Abs(along-(lo+hi)/2)-(hi-lo)/2, math.Abs(across)-half
+										distance = math.Min(distance, math.Hypot(math.Max(qx, 0), math.Max(qy, 0))+math.Min(math.Max(qx, qy), 0))
+									}
+								}
+								got := img.RGBAAt(x, y)
+								if distance < -1.25 && got != ink || distance > 1.25 && got.A != 0 {
+									t.Fatalf("像素 (%d,%d)=%v，独立轮廓距离 %.3f", x, y, got, distance)
+								}
+							}
+						}
+					})
+				}
+			}
+		}
+	}
+}
