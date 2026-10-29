@@ -1,4 +1,4 @@
-# SVG 描边正确性修正
+# 路径精度与 SVG 描边正确性修正
 
 ## 范围
 
@@ -64,3 +64,70 @@ Chrome 与合成几何用例交叉核对；不把单个参考实现作为所有 
 
 - [SVG 2 stroke shape](https://www.w3.org/TR/SVG2/painting.html#StrokeShape)
 - [SVG 2 path implementation notes](https://www.w3.org/TR/SVG2/paths.html#PathElementImplementationNotes)
+
+## 后续阶段：边缘、虚线与 miter-clip（2026-10-29）
+
+本阶段基线为 main 的 `786a0e1`，在原有纯 Go API 内修正数值与几何契约。
+
+### 坐标量化与重复采样
+
+`ToFixedP`、`Matrix2D.TFixed` 和曲线离散顶点统一向最近的 1/64 坐标单位取整，
+半步按 Go `math.Round` 规则远离零。正负坐标对称，避免浮点尾差将整数边界向内缩一格。
+例如略小于 16 的浮点数应量化为 16，而非 15+63/64。
+
+曲线的重复定点采样不携带方向，`Stroker.lineF` 跳过这些点并保留上一法向量。
+原先重复点会得到零法向量，将描边收缩到中心线，导致圆端帽内部出现半透明缺口。
+显式零长度线段的端帽仍由既有命令连接和 Stop 逻辑处理。
+
+覆盖：`TestFixedPointRounding`、`TestBezierSamplesOnStraightAxis`、`TestBezierEndpointCoverage`。
+所有控制点位于 y=64 的曲线必须保持 y=64；圆端帽内部使用独立圆盘距离断言不透明。
+
+### 虚线距离与端帽
+
+- 保留公开 Dashes / DashOffset 的定点类型，内部累计距离使用 float64。
+- 小段长度以完整欧氏长度累计，仅在输出轮廓顶点时量化，消除逐段截断的相位漂移。
+- 奇数模式重复一次；正负及大 offset 按完整周期归一化，再量化为定点。
+- dash 恰好在命令顶点结束时先结束该 dash，不生成跨 dash 的连接；零长度间隔仍区分两个 dash。
+- gap 在顶点结束时，将下一个 dash 的起始端帽推迟到取得出方向切线后绘制。
+  路径在这里结束则没有下一条 dash，不能绘制多余端帽。
+- 绘制期间出现的零长度离散段不推进距离。全零模式继续采用既有实线契约。
+
+覆盖：`TestDashDistance` 比较一段与 448 个共线小段，并使用解析相位判断像素；
+`TestOddDashPattern` 验证奇数模式；`TestDashBoundaryAtCorner` 验证零间隔不产生 miter。
+`TestDashCapsAtVertices` 独立列出 L 形路径上的 dash 区间，用圆盘/矩形距离验证
+round、square、butt 与普通间隔、零间隔、零长度 dash 的九种组合。
+
+`FuzzDashSegments` 对有界路径、重复点、负偏移、零间隔执行无 panic 与预乘像素检查。
+该测试文件使用 go1.18 构建约束；生产库的 go.mod 仍为 Go 1.17。
+
+### miter-clip 裁切平面
+
+旧算法把投影比例过早量化到 1/64，并使用不准确的中心重建 gap。
+修正后用浮点求两条外侧边与裁切平面的交点，最终顶点才转定点；平面垂直于 miter 轴，
+距连接点为半线宽乘 miterLimit。保留 JoinGap 回调，传入位于真实平面上的中心与端点。
+本分支也用于零曲率的 ArcClip；非零曲率 ArcClip 的独立算法不在本轮修改范围。
+
+`TestMiterClipPlane` 使用精确的 3-4-5 法向量，独立求交点，允许误差为一个定点单位；
+`TestMiterClipGapCallback` 验证回调保留且中心正确。
+
+Chrome 156.0.8078.47 实测不支持 miter-clip，计算样式回退为 miter，不能作为该属性的验收参考。
+本项使用数学构造及 resvg 固定参考 PNG：500px 输出的 stable_bad/geometry_bad 均为零，
+原有边缘差异进一步减小。虚线 n-0 的原始参考也支持分离端帽；旧版本 librsvg 的结果不同。
+
+依据：
+
+- [SVG 2 dash positions](https://www.w3.org/TR/SVG2/painting.html#StrokeShape)
+- [SVG Strokes miter-clip](https://w3c.github.io/svgwg/specs/strokes/#StrokeLinejoinProperty)
+- [早期裁切描述的规范讨论](https://github.com/w3c/svgwg/issues/745)
+
+### 验证与后续
+
+- [x] rasterx / scanFT / oksvg 全量测试和 race。
+- [x] Dasher fuzz 15 秒，132,349 次；解析 fuzz 15 秒，564,963 次；无失败。
+- [x] 三库共九项 CGO_ENABLED=0 目标编译：Windows amd64、Linux arm64、macOS arm64。
+- [x] 5,756 份原始 SVG 的三个尺寸对照，及额外合成/样式回归；详见 oksvg CorpusValidation。
+- [x] 本轮代码按坐标精度、端帽、虚线、miter-clip 独立提交。
+- [ ] 从 master 移植修复到上游 PR 分支；GOUI 依赖升级另按指令执行。
+
+原生运行环境为 Linux amd64、Go 1.25.8；跨目标仅编译，不代表其他平台原生运行通过。
+本阶段不改变扫描器选择，不增加高精度路径模型，也不声称消除所有亚像素差异。

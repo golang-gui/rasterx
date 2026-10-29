@@ -294,28 +294,32 @@ func (r *Stroker) strokeEdge(p C2Point, crossProd fixed.Int26_6) {
 		((r.JoinMode == Arc || r.JoinMode == ArcClip) && (rt == 0 && rl == 0)) {
 		xt := CalcIntersect(s1.Sub(p.TTan), s1, s2, s2.Sub(p.LTan))
 		xa := xt.Sub(p.P)
-		if Length(xa) < r.mLimit { // within miter limit
+		length := math.Hypot(float64(xa.X), float64(xa.Y))
+		if length <= float64(r.mLimit) { // within miter limit
 			ra.Line(xt)
 			ra.Line(s2)
 			return
 		}
 		if r.JoinMode == MiterClip || (r.JoinMode == ArcClip) {
-			//Projection of tNorm onto xa
-			tProjP := xa.Mul(fixed.Int26_6((DotProd(xa, p.TNorm) << 6) / DotProd(xa, xa)))
-			projLen := Length(tProjP)
-			if r.mLimit > projLen { // the miter limit line is past the bevel point
-				// t is the fraction shifted by tStrokeShift to scale the vectors from the bevel point
-				// to the line intersection, so that they abbut the miter limit line.
-				tiLength := Length(xa)
-				sx1, sx2 := xt.Sub(s1), xt.Sub(s2)
-				t := (r.mLimit - projLen) << tStrokeShift / (tiLength - projLen)
-				tx := ToLength(sx1, t*Length(sx1)>>tStrokeShift)
-				lx := ToLength(sx2, t*Length(sx2)>>tStrokeShift)
-				vx := ToLength(xa, t*Length(xa)>>tStrokeShift)
-				s1p, _, ap := s1.Add(tx), s2.Add(lx), p.P.Add(vx)
-				gLen := Length(ap.Sub(s1p))
-				ra.Line(s1p)
-				r.JoinGap(ra, ap, ToLength(turnPort90(p.TTan), gLen), ToLength(turnPort90(p.LTan), gLen))
+			// Intersect both outer edges with the plane perpendicular to the
+			// miter axis at mLimit. Keep the projection in floating point until
+			// the final points, rather than quantizing its ratio to 1/64.
+			ux, uy := float64(xa.X)/length, float64(xa.Y)/length
+			projection := func(n fixed.Point26_6) float64 { return float64(n.X)*ux + float64(n.Y)*uy }
+			limit := float64(r.mLimit)
+			if limit > math.Max(projection(p.TNorm), projection(p.LNorm)) {
+				clip := func(point fixed.Point26_6) fixed.Point26_6 {
+					d := projection(point.Sub(p.P))
+					t := (limit - d) / (length - d)
+					return fixed.Point26_6{
+						X: fixed.Int26_6(math.Round(float64(point.X) + t*float64(xt.X-point.X))),
+						Y: fixed.Int26_6(math.Round(float64(point.Y) + t*float64(xt.Y-point.Y))),
+					}
+				}
+				left, right := clip(s1), clip(s2)
+				center := p.P.Add(fixed.Point26_6{X: fixed.Int26_6(math.Round(ux * limit)), Y: fixed.Int26_6(math.Round(uy * limit))})
+				ra.Line(left)
+				r.JoinGap(ra, center, left.Sub(center), right.Sub(center))
 				ra.Line(s2)
 				return
 			}

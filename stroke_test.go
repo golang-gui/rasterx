@@ -121,6 +121,33 @@ func (s *joinOutlineRecorder) Line(p fixed.Point26_6) {
 	s.Scanner.Line(p)
 }
 
+// 3-4-5 法向量无需归一化误差；偏移直线交点为 (15,-5)，裁切平面距顶点 10。
+func TestMiterClipPlane(t *testing.T) {
+	for _, mode := range []rasterx.JoinMode{rasterx.MiterClip, rasterx.ArcClip} {
+		t.Run(strconv.Itoa(int(mode)), func(t *testing.T) {
+			img := image.NewRGBA(image.Rect(0, 0, 128, 128))
+			s := &joinOutlineRecorder{Scanner: rasterx.NewScannerGV(128, 128, img, img.Bounds())}
+			r := rasterx.NewStroker(128, 128, s)
+			r.SetStroke(10*64, 2*64, nil, nil, nil, mode)
+			r.Joiner(rasterx.C2Point{P: rasterx.ToFixedP(64, 64), TTan: rasterx.ToFixedP(4, 0), LTan: rasterx.ToFixedP(-4, 3), TNorm: rasterx.ToFixedP(0, -5), LNorm: rasterx.ToFixedP(3, 4)})
+			length := math.Sqrt(250)
+			projection := 25 / length
+			fraction := (10 - projection) / (length - projection)
+			for _, normal := range [][2]float64{{0, -5}, {3, 4}} {
+				x := 64 + normal[0] + fraction*(15-normal[0])
+				y := 64 + normal[1] + fraction*(-5-normal[1])
+				nearest := math.Inf(1)
+				for _, p := range s.points {
+					nearest = math.Min(nearest, math.Hypot(float64(p.X)/64-x, float64(p.Y)/64-y))
+				}
+				if nearest > 1.0/64 {
+					t.Errorf("裁切交点 (%.5f,%.5f) 未出现，最近轮廓点距离 %.5f，允许 1/64", x, y, nearest)
+				}
+			}
+		})
+	}
+}
+
 // 重合的端点控制点会产生多个量化后相同的采样点；圆端帽的内部不能因此变透明。
 func TestBezierEndpointCoverage(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 128, 128))
@@ -137,5 +164,25 @@ func TestBezierEndpointCoverage(t *testing.T) {
 				t.Fatalf("端帽内部 (%d,%d) alpha=%d，期望 255", x, y, img.RGBAAt(x, y).A)
 			}
 		}
+	}
+}
+
+// 自定义 gap 仍需收到调用，中心应位于距离顶点 10 的真实裁切平面。
+func TestMiterClipGapCallback(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 128, 128))
+	r := rasterx.NewStroker(128, 128, rasterx.NewScannerGV(128, 128, img, img.Bounds()))
+	calls := 0
+	gap := func(p rasterx.Adder, center, a, b fixed.Point26_6) {
+		calls++
+		x, y := 64+30/math.Sqrt(10), 64-10/math.Sqrt(10)
+		if math.Hypot(float64(center.X)/64-x, float64(center.Y)/64-y) > 1.0/64 {
+			t.Errorf("gap 中心=%v，期望 (%.5f,%.5f)", center, x, y)
+		}
+		rasterx.FlatGap(p, center, a, b)
+	}
+	r.SetStroke(10*64, 2*64, nil, nil, gap, rasterx.MiterClip)
+	r.Joiner(rasterx.C2Point{P: rasterx.ToFixedP(64, 64), TTan: rasterx.ToFixedP(4, 0), LTan: rasterx.ToFixedP(-4, 3), TNorm: rasterx.ToFixedP(0, -5), LNorm: rasterx.ToFixedP(3, 4)})
+	if calls != 1 {
+		t.Fatalf("gap 调用次数=%d，期望 1", calls)
 	}
 }
